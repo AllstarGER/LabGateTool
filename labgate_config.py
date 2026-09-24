@@ -1,14 +1,12 @@
 import configparser
 import os
 
-from cryptography.fernet import Fernet
-
 import app_paths
 
 
 SETTINGS_FILE_NAME = "settings.ini"
 LABGATE_SETTINGS_FILE_NAME = "labgate_action.ini"
-_FERNET_KEY = "kIDfMk5kxCTTJ5FnNKxLsVKz-DUQVWwocZcERmsRRlA="
+DEFAULT_LAB_MARKER_CONTENT = "Laborergebnis liegt vor"
 
 
 def _find_settings_path(file_name):
@@ -23,31 +21,35 @@ def get_labgate_settings_path():
     return _find_settings_path(LABGATE_SETTINGS_FILE_NAME)
 
 
-def _safe_decrypt_or_raw(value):
-    if value in (None, ""):
-        return ""
-    try:
-        cipher = Fernet(_FERNET_KEY)
-        return cipher.decrypt(str(value).encode()).decode()
-    except Exception:
-        return str(value)
+def load_backend_setting():
+    """Backend-Adresse und Desktop-API-Key aus Umgebung bzw. settings.ini.
 
-
-def load_db_setting():
+    Die LabGate-Aktion greift nicht mehr direkt auf die Portal-Datenbank zu
+    (frueher ueber die Datenbanksektion der settings.ini): sie spricht wie der PMS-Client die
+    Portal-API unter [Backend]/base_url an.
+    """
     settings_obj = {
-        "host": "",
-        "dbname": "",
-        "user": "",
-        "password": "",
+        "base_url": "",
+        "desktop_api_key": "",
     }
+
+    for env_name, key in (
+        ("HC_BACKEND_BASE_URL", "base_url"),
+        ("HC_DESKTOP_API_KEY", "desktop_api_key"),
+        ("DESKTOP_API_KEY", "desktop_api_key"),
+    ):
+        env_value = str(os.getenv(env_name, "") or "").strip()
+        if env_value and not settings_obj[key]:
+            settings_obj[key] = env_value
+
     config = configparser.ConfigParser()
-    config.read(get_main_settings_path())
-    if not config.has_section("Database"):
+    if not config.read(get_main_settings_path()):
         return settings_obj
-    settings_obj["host"] = config.get("Database", "host", fallback="")
-    settings_obj["dbname"] = config.get("Database", "dbname", fallback="")
-    settings_obj["user"] = config.get("Database", "user", fallback="")
-    settings_obj["password"] = _safe_decrypt_or_raw(config.get("Database", "password", fallback=""))
+    if config.has_section("Backend"):
+        if not settings_obj["base_url"]:
+            settings_obj["base_url"] = config.get("Backend", "base_url", fallback="").strip()
+        if not settings_obj["desktop_api_key"]:
+            settings_obj["desktop_api_key"] = config.get("Backend", "desktop_api_key", fallback="").strip()
     return settings_obj
 
 

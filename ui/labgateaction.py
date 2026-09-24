@@ -23,7 +23,7 @@ from PyQt6.QtWidgets import (
 from loguru import logger
 
 import labgate_config
-import labgate_db
+import labgate_api
 from labgate_action_service import LabGateReturnWatcher
 from labgate_action_util import first_free_lab_slot, write_gdt_request_file
 
@@ -774,9 +774,14 @@ class LabGateActionWindow(QWidget):
             self.showMaximized()
 
     def ensure_schema(self):
-        ok, resp = labgate_db.update_labgate_job_structure()
-        if not ok:
-            QMessageBox.information(self, "Datenbankfehler", str(resp))
+        """Prueft die Backend-Konfiguration (frueher: Anlegen der Jobtabelle)."""
+        if labgate_api.backend_is_configured():
+            return
+        QMessageBox.information(
+            self,
+            "Backend nicht konfiguriert",
+            "Bitte in der settings.ini unter [Backend] base_url und desktop_api_key hinterlegen.",
+        )
 
     def append_log(self, message):
         stamp = datetime.now().strftime("%H:%M:%S")
@@ -787,7 +792,7 @@ class LabGateActionWindow(QWidget):
         self.listPatients.clear()
         self._selected_patient = None
 
-        resp_flag, rows = labgate_db.get_today_live_patients_for_labgate()
+        resp_flag, rows = labgate_api.get_today_live_patients_for_labgate()
         if not resp_flag:
             self.lbPatientCount.setText("0")
             QMessageBox.information(self, "Hinweis", str(rows))
@@ -835,7 +840,7 @@ class LabGateActionWindow(QWidget):
             self.refresh_action_state()
             return
 
-        case_flag, case_info = labgate_db.get_today_case_for_patient(patient_row["id"])
+        case_flag, case_info = labgate_api.get_today_case_for_patient(patient_row["id"])
         if not case_flag or case_info is None:
             case_info = {
                 "case_no": patient_row.get("case_no", ""),
@@ -846,7 +851,7 @@ class LabGateActionWindow(QWidget):
             }
         self._selected_case_info = case_info
 
-        job_flag, job_info = labgate_db.get_open_labgate_job_for_patient(patient_row["id"])
+        job_flag, job_info = labgate_api.get_open_labgate_job_for_patient(patient_row["id"])
 
         self.lbPatientName.setText(f"{patient_row['firstname']} {patient_row['secondname']}")
         self.lbPatientDob.setText(patient_row["dob"])
@@ -887,11 +892,11 @@ class LabGateActionWindow(QWidget):
             QMessageBox.information(self, "Hinweis", "Dieser Slot hat noch keine Labornummer.")
             return
 
-        marker_flag, marker = labgate_db.get_lab_marker(case_info.get("case_no"), slot_no)
+        marker_flag, marker = labgate_api.get_lab_marker(case_info.get("case_no"), slot_no)
         if not marker_flag:
             QMessageBox.information(self, "Hinweis", str(marker))
             return
-        users_flag, users = labgate_db.get_labgate_users()
+        users_flag, users = labgate_api.get_labgate_users()
         if not users_flag:
             QMessageBox.information(self, "Hinweis", str(users))
             return
@@ -899,14 +904,14 @@ class LabGateActionWindow(QWidget):
         selected_user_ids = []
         content = "Laborergebnis liegt vor"
         if marker:
-            selected_user_ids = labgate_db.parse_lab_marker_user_ids(marker.get("t_users"))
+            selected_user_ids = labgate_api.parse_lab_marker_user_ids(marker.get("t_users"))
             content = marker.get("t_content") or content
 
         dialog = LabGateMarkerDialog(users, selected_user_ids, content, self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
 
-        save_flag, save_resp = labgate_db.save_lab_marker(
+        save_flag, save_resp = labgate_api.save_lab_marker(
             case_info.get("case_no"),
             slot_no,
             dialog.selected_user_ids(),
@@ -922,7 +927,7 @@ class LabGateActionWindow(QWidget):
         )
 
     def refresh_action_state(self, case_info=None, has_open_job=None):
-        any_open_flag, open_jobs = labgate_db.get_active_labgate_jobs(["pending"])
+        any_open_flag, open_jobs = labgate_api.get_active_labgate_jobs(["pending"])
         any_open_job = bool(any_open_flag and open_jobs)
         self._blocking_job = open_jobs[0] if any_open_job else None
 
@@ -938,12 +943,12 @@ class LabGateActionWindow(QWidget):
             return
 
         if case_info is None:
-            case_flag, case_info = labgate_db.get_today_case_for_patient(self._selected_patient["id"])
+            case_flag, case_info = labgate_api.get_today_case_for_patient(self._selected_patient["id"])
             if not case_flag:
                 case_info = None
 
         if has_open_job is None:
-            job_flag, job_info = labgate_db.get_open_labgate_job_for_patient(self._selected_patient["id"])
+            job_flag, job_info = labgate_api.get_open_labgate_job_for_patient(self._selected_patient["id"])
             has_open_job = bool(job_flag and job_info)
         if has_open_job and any_open_job:
             for candidate in open_jobs:
@@ -1001,7 +1006,7 @@ class LabGateActionWindow(QWidget):
             QMessageBox.information(self, "Hinweis", "Bitte zuerst einen Patienten auswählen.")
             return
 
-        any_open_flag, open_jobs = labgate_db.get_active_labgate_jobs(["pending"])
+        any_open_flag, open_jobs = labgate_api.get_active_labgate_jobs(["pending"])
         if any_open_flag and open_jobs:
             QMessageBox.information(self, "Hinweis", "Es existiert bereits ein offener LabGate-Auftrag.")
             return
@@ -1011,7 +1016,7 @@ class LabGateActionWindow(QWidget):
             QMessageBox.information(self, "Hinweis", "Bitte zuerst die LabGate-Einstellungen konfigurieren.")
             return
 
-        case_flag, case_info = labgate_db.get_today_case_for_patient(self._selected_patient["id"])
+        case_flag, case_info = labgate_api.get_today_case_for_patient(self._selected_patient["id"])
         if not case_flag or case_info is None:
             QMessageBox.information(self, "Hinweis", "Kein heutiger Fall für den Patienten gefunden.")
             return
@@ -1037,7 +1042,7 @@ class LabGateActionWindow(QWidget):
                 f"dob={self._selected_patient.get('dob', '')}"
             )
             self.append_log(write_message)
-            job_flag, job_resp = labgate_db.create_labgate_job(
+            job_flag, job_resp = labgate_api.create_labgate_job(
                 {
                     "case_no": case_info["case_no"],
                     "patient_id": self._selected_patient["id"],
@@ -1066,7 +1071,7 @@ class LabGateActionWindow(QWidget):
             QMessageBox.information(self, "Hinweis", str(e))
 
     def reset_open_job(self):
-        any_open_flag, open_jobs = labgate_db.get_active_labgate_jobs(["pending"])
+        any_open_flag, open_jobs = labgate_api.get_active_labgate_jobs(["pending"])
         if not any_open_flag:
             self._blocking_job = None
             self.btnCreateOrder.setEnabled(False)
@@ -1106,7 +1111,7 @@ class LabGateActionWindow(QWidget):
             return
 
         error_text = f"Manuell zurückgesetzt am {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}"
-        reset_flag, reset_resp = labgate_db.mark_labgate_job_error(
+        reset_flag, reset_resp = labgate_api.mark_labgate_job_error(
             job_info["id"],
             job_info.get("return_file", "") or "",
             error_text,

@@ -6,7 +6,7 @@ from PyQt6.QtCore import QThread, pyqtSignal
 from loguru import logger
 
 import labgate_config
-import labgate_db
+import labgate_api
 from labgate_action_util import (
     FileStabilityTracker,
     clean_lab_number,
@@ -98,7 +98,7 @@ def process_incoming_return_file(file_path, incoming_folder):
     except Exception as e:
         archived = _move_to_error(file_path, incoming_folder)
         _log_return_error(file_name, archived, str(e), record=record, job=job)
-        labgate_db.mark_labgate_job_error(job["id"], archived, str(e), raw_lab_number, None)
+        labgate_api.mark_labgate_job_error(job["id"], archived, str(e), raw_lab_number, None)
         return False, {
             "message": str(e),
             "return_file": archived,
@@ -115,7 +115,7 @@ def process_incoming_return_file(file_path, incoming_folder):
         )
         archived = _move_to_error(file_path, incoming_folder)
         _log_return_error(file_name, archived, reason, record=record, job=job)
-        labgate_db.mark_labgate_job_error(job["id"], archived, reason, raw_lab_number, None)
+        labgate_api.mark_labgate_job_error(job["id"], archived, reason, raw_lab_number, None)
         return False, {
             "message": reason,
             "return_file": archived,
@@ -126,11 +126,11 @@ def process_incoming_return_file(file_path, incoming_folder):
 
     archived = _move_to_processed(file_path, incoming_folder)
     slot_values = [(start_slot_no + offset, clean_number) for offset, clean_number in enumerate(clean_numbers)]
-    update_flag, update_resp = labgate_db.update_case_lab_code_slots(job["case_no"], slot_values)
+    update_flag, update_resp = labgate_api.update_case_lab_code_slots(job["case_no"], slot_values)
     if not update_flag:
         error_archived = _move_processed_to_error(archived, incoming_folder)
         _log_return_error(file_name, error_archived, str(update_resp), record=record, job=job)
-        labgate_db.mark_labgate_job_error(job["id"], error_archived, str(update_resp), raw_lab_number, ";".join(clean_numbers))
+        labgate_api.mark_labgate_job_error(job["id"], error_archived, str(update_resp), raw_lab_number, ";".join(clean_numbers))
         return False, {
             "message": str(update_resp),
             "return_file": error_archived,
@@ -140,7 +140,7 @@ def process_incoming_return_file(file_path, incoming_folder):
         }
 
     clean_number = ";".join(clean_numbers)
-    status_flag, status_resp = labgate_db.mark_labgate_job_imported(job["id"], archived, raw_lab_number, clean_number)
+    status_flag, status_resp = labgate_api.mark_labgate_job_imported(job["id"], archived, raw_lab_number, clean_number)
     if not status_flag:
         logger.error(
             "LabGate return imported but job status update failed: "
@@ -154,6 +154,30 @@ def process_incoming_return_file(file_path, incoming_folder):
             "events": [read_message],
         }
 
+    slot_numbers = [start_slot_no + offset for offset in range(len(clean_numbers))]
+    lab_numbers = {slot_no: lab_number for slot_no, lab_number in slot_values}
+    notify_flag, notify_resp = labgate_api.notify_lab_report_assignment(
+        case_no=job["case_no"],
+        slot_numbers=slot_numbers,
+        lab_numbers=lab_numbers,
+        job=job,
+        file_name=file_name,
+        archive_path=archived,
+    )
+    if not notify_flag:
+        logger.error(
+            "LabGate return imported but lab notification failed: "
+            f"file={file_name} case_no={job.get('case_no')} reason={notify_resp}"
+        )
+        notification = {"error": str(notify_resp)}
+    else:
+        notification = notify_resp
+        if notify_resp.get("notified", 0) > 0:
+            logger.info(
+                "LabGate lab notification sent: "
+                f"case_no={job.get('case_no')} slots={slot_numbers} notified={notify_resp.get('notified')}"
+            )
+
     return True, {
         "message": f"LabGate import finished for case {job['case_no']} ({len(clean_numbers)} Auftragsnummern)",
         "return_file": archived,
@@ -163,6 +187,7 @@ def process_incoming_return_file(file_path, incoming_folder):
         "lab_number_clean": clean_number,
         "lab_numbers_clean": clean_numbers,
         "file_name": file_name,
+        "notification": notification,
         "events": [read_message],
     }
 
@@ -170,8 +195,8 @@ def process_incoming_return_file(file_path, incoming_folder):
 def _lookup_pending_job(record):
     patient_id = record.get("patient_id", "")
     if patient_id.isdigit():
-        return labgate_db.find_open_labgate_job_by_return_data(patient_id=int(patient_id))
-    return labgate_db.find_open_labgate_job_by_return_data(
+        return labgate_api.find_open_labgate_job_by_return_data(patient_id=int(patient_id))
+    return labgate_api.find_open_labgate_job_by_return_data(
         firstname=record.get("firstname", ""),
         secondname=record.get("secondname", ""),
         dob=record.get("dob", ""),

@@ -5,16 +5,12 @@ from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 project_dir = Path.cwd()
 
-mysql_connector_datas = collect_data_files('mysql.connector', includes=['locales/**/*.py'])
 hiddenimports = []
-hiddenimports += collect_submodules('mysql.connector.locales')
-hiddenimports += collect_submodules('mysql.connector.plugins')
 
 a = Analysis(
     ['labgate_action_main.py'],
     pathex=[],
     binaries=[],
-    datas=mysql_connector_datas,
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
@@ -23,7 +19,6 @@ a = Analysis(
         'pytest',
         '_pytest',
         'py',
-        '_mysql_connector',
         'torch',
         'torchvision',
         'ultralytics',
