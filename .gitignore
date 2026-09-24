@@ -1,0 +1,12 @@
+__pycache__/
+.pytest_cache/
+.venv/
+build/
+dist/
+*.py[cod]
+*.log
+log/
+settings.ini
+settings-*.ini
+*.db
+*.spec.bak

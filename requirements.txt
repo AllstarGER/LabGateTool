@@ -1,0 +1,6 @@
+PyQt6
+cryptography
+loguru
+mysql-connector-python
+pytest
+pyinstaller
