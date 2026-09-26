@@ -1,6 +1,6 @@
 """Das Werkzeug liegt im PMS-Ordner und liest dessen settings.ini mit."""
 
-import import json
+import json
 import os
 import sys
 import tempfile
