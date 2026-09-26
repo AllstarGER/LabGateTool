@@ -41,6 +41,10 @@ QWidget {
     font-size: 13pt;
 }
 
+/* Labels und Textfelder sind durchsichtig - sonst malen sie helle Kaesten
+   ueber den blauen Header und ueber die farbigen Hint-Banner. */
+QLabel, QCheckBox, QRadioButton { background: transparent; }
+
 /* ---- Header ---- */
 QFrame#headerBar { background-color: #1565C0; }
 QLabel#headerTitle {
@@ -49,11 +53,11 @@ QLabel#headerTitle {
     font-weight: 600;
 }
 QLabel#headerSubtitle {
-    color: #BBD2F2;
+    color: #E3F2FD;   /* >= 4.5:1 auf #1565C0 */
     font-size: 12pt;
 }
 QPushButton#header {
-    background-color: rgba(255, 255, 255, 0.16);
+    background-color: rgba(255, 255, 255, 0.10);
     color: white;
     border: 1px solid rgba(255, 255, 255, 0.30);
     border-radius: 12px;
@@ -162,7 +166,7 @@ QPushButton {
 }
 QPushButton:hover { background-color: #EAF1FB; }
 QPushButton:pressed { background-color: #D6E4F7; }
-QPushButton:disabled { background-color: #F3F4F6; color: #9CA3AF; border-color: #E5E7EB; }
+QPushButton:disabled { background-color: #F3F4F6; color: #6B7280; border-color: #DDE1E7; }
 
 QPushButton#primary {
     background-color: #2E7D32;
@@ -175,7 +179,7 @@ QPushButton#primary {
 }
 QPushButton#primary:hover { background-color: #388E3C; }
 QPushButton#primary:pressed { background-color: #1B5E20; }
-QPushButton#primary:disabled { background-color: #C8E6C9; color: #FFFFFF; }
+QPushButton#primary:disabled { background-color: #C8E6C9; color: #1B5E20; }
 
 QPushButton#warning {
     background-color: #FB8C00;
@@ -188,7 +192,7 @@ QPushButton#warning {
 }
 QPushButton#warning:hover { background-color: #FFA726; }
 QPushButton#warning:pressed { background-color: #F57C00; }
-QPushButton#warning:disabled { background-color: #FFE0B2; color: #FFFFFF; }
+QPushButton#warning:disabled { background-color: #FFE0B2; color: #7A4F00; }
 
 /* ---- Patient list ---- */
 QListWidget#patientList {
@@ -210,6 +214,29 @@ QListWidget#patientList::item:hover {
     background-color: #EAF1FB;
 }
 QListWidget#patientList::item:selected {
+    background-color: #1565C0;
+    color: #FFFFFF;
+    border-color: #1565C0;
+}
+
+/* ---- Auswahlliste (Mitarbeiterbenachrichtigung) ---- */
+QListWidget#markerList {
+    background-color: transparent;
+    border: none;
+    outline: 0;
+    padding: 0px;
+}
+QListWidget#markerList::item {
+    background-color: #FFFFFF;
+    color: #1F2A37;
+    border: 1px solid #E1E6ED;
+    border-radius: 12px;
+    padding: 14px 18px;
+    margin: 5px 2px;
+    font-size: 14pt;
+}
+QListWidget#markerList::item:hover { background-color: #EAF1FB; }
+QListWidget#markerList::item:selected {
     background-color: #1565C0;
     color: #FFFFFF;
     border-color: #1565C0;
@@ -273,7 +300,7 @@ def _make_field_row(key_text):
     row.setSpacing(12)
     key = QLabel(key_text)
     key.setObjectName("fieldKey")
-    key.setMinimumWidth(150)
+    key.setMinimumWidth(112)
     key.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
     value = QLabel("-")
     value.setObjectName("fieldValue")
@@ -426,10 +453,26 @@ class LabGateMarkerDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Mitarbeiter für Laborbenachrichtigung")
         self.setModal(True)
-        self.resize(620, 600)
+        self.setStyleSheet(GLOBAL_STYLESHEET)
+        self.resize(680, 640)
+
+        header = QFrame()
+        header.setObjectName("headerBar")
+        header_layout = QVBoxLayout(header)
+        header_layout.setContentsMargins(24, 12, 24, 12)
+        header_layout.setSpacing(2)
+        header_title = QLabel("Mitarbeiter für Laborbenachrichtigung")
+        header_title.setObjectName("headerTitle")
+        header_title.setWordWrap(True)
+        header_subtitle = QLabel("Ausgewählte Mitarbeiter werden informiert, sobald der Laborbericht eintrifft.")
+        header_subtitle.setObjectName("headerSubtitle")
+        header_subtitle.setWordWrap(True)
+        header_layout.addWidget(header_title)
+        header_layout.addWidget(header_subtitle)
 
         selected_ids = {str(user_id) for user_id in (selected_user_ids or [])}
         self.user_list = QListWidget()
+        self.user_list.setObjectName("markerList")
         self.user_list.setSelectionMode(QListWidget.SelectionMode.MultiSelection)
         self.user_list.setMinimumHeight(360)
         for user in users:
@@ -439,8 +482,11 @@ class LabGateMarkerDialog(QDialog):
                 label = f"{user['user_name']} ({user['user_id']})"
             item = QListWidgetItem(label)
             item.setData(Qt.ItemDataRole.UserRole, user_id)
-            item.setSelected(str(user_id) in selected_ids)
             self.user_list.addItem(item)
+            # Auswahl erst nach dem Einfuegen setzen - vorher verwirft Qt sie, und
+            # Speichern ohne erneute Auswahl wuerde die Benachrichtigung loeschen.
+            if str(user_id) in selected_ids:
+                item.setSelected(True)
 
         self.lnContent = QLineEdit(content or "Laborergebnis liegt vor")
         self.lnContent.setPlaceholderText("Hinweis für die Benachrichtigung")
@@ -457,13 +503,18 @@ class LabGateMarkerDialog(QDialog):
         actions.addWidget(btnSave)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setContentsMargins(0, 0, 0, 20)
         layout.setSpacing(14)
-        layout.addWidget(QLabel("Ein oder mehrere Mitarbeiter auswählen:"))
-        layout.addWidget(self.user_list, 1)
-        layout.addWidget(QLabel("Hinweis:"))
-        layout.addWidget(self.lnContent)
-        layout.addLayout(actions)
+        layout.addWidget(header)
+        body = QVBoxLayout()
+        body.setContentsMargins(24, 4, 24, 0)
+        body.setSpacing(14)
+        body.addWidget(QLabel("Ein oder mehrere Mitarbeiter auswählen (Mehrfachauswahl mit Strg):"))
+        body.addWidget(self.user_list, 1)
+        body.addWidget(QLabel("Hinweis:"))
+        body.addWidget(self.lnContent)
+        body.addLayout(actions)
+        layout.addLayout(body)
 
     def selected_user_ids(self):
         return [
@@ -524,7 +575,7 @@ class LabGateActionWindow(QWidget):
     def _build_header(self):
         header = QFrame()
         header.setObjectName("headerBar")
-        header.setFixedHeight(96)
+        header.setMinimumHeight(96)
         layout = QHBoxLayout(header)
         layout.setContentsMargins(28, 14, 28, 14)
         layout.setSpacing(12)
@@ -533,7 +584,7 @@ class LabGateActionWindow(QWidget):
         title_box.setSpacing(2)
         title = QLabel("LabGate")
         title.setObjectName("headerTitle")
-        subtitle = QLabel("Aktions-Tool – Laboraufträge senden und Rückläufe verfolgen")
+        subtitle = QLabel("Laboraufträge senden, Rückläufe verfolgen")
         subtitle.setObjectName("headerSubtitle")
         title_box.addWidget(title)
         title_box.addWidget(subtitle)
@@ -547,15 +598,15 @@ class LabGateActionWindow(QWidget):
         self.btnExit.setObjectName("headerExit")
         for btn in (self.btnRefresh, self.btnSettings, self.btnExit):
             btn.setMinimumHeight(60)
-            btn.setMinimumWidth(170)
+            # Breite = Textbreite + Innenabstand, sonst schneidet Qt die Beschriftung ab
+            btn.setMinimumWidth(max(160, btn.sizeHint().width()))
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
 
         self.btnRefresh.clicked.connect(self.reload_patients)
         self.btnSettings.clicked.connect(self.open_settings)
         self.btnExit.clicked.connect(self.close)
 
-        layout.addLayout(title_box)
-        layout.addStretch(1)
+        layout.addLayout(title_box, 1)
         layout.addWidget(self.btnRefresh)
         layout.addWidget(self.btnSettings)
         layout.addWidget(self.btnExit)
