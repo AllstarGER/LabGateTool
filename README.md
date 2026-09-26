@@ -61,8 +61,22 @@ python -m pytest
 
 ## Build
 
+On Windows:
+
 ```powershell
-python -m PyInstaller labgate_action_onefile.spec
+python -m pip install -r requirements.txt
+bash scripts/build_windows_exe.sh
 ```
 
-The resulting executable is named `labgate_action_onefile.exe`.
+On a Linux build host the same script builds through Wine with a Windows Python
+installation (on the portal host: prefix `/root/.wine-healthcard-release`,
+interpreter `C:\Python311\python.exe` with PyQt6, loguru and PyInstaller):
+
+```bash
+WINEPREFIX=/root/.wine-healthcard-release bash scripts/build_windows_exe.sh
+```
+
+Wine needs real pipe handles for the child process, so the script pipes the
+PyInstaller output instead of redirecting it into a file.
+
+The resulting executable is `dist/labgate_action_onefile.exe` (Windows x86-64).
