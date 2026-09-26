@@ -60,6 +60,21 @@ they see it in the PMS notification list and can open the assignment. Slots with
 marker or without selected employees are skipped; a failing notification is logged and
 never blocks the import itself.
 
+## Screenshots
+
+| Hauptfenster | Mitarbeiter für die Laborbenachrichtigung | Einstellungen |
+|---|---|---|
+| ![Hauptfenster](docs/screenshots/tool-main.png) | ![Mitarbeiterbenachrichtigung](docs/screenshots/tool-marker-dialog.png) | ![Einstellungen](docs/screenshots/tool-settings.png) |
+
+Neu erzeugen (Beispieldaten, es wird nichts gesendet):
+
+```bash
+QT_QPA_PLATFORM="vnc:size=1920x1080,depth=32" python scripts/render_ui_screenshots.py
+```
+
+Die Offscreen-Plattform hat nur 800x800 Pixel und beschneidet breite Layouts -
+fuer realistische Bilder eine groessere virtuelle Flaeche vorgeben (siehe oben).
+
 ## Tests
 
 ```powershell
