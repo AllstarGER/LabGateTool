@@ -356,6 +356,13 @@ class LabGateSettingsDialog(QDialog):
         title = QLabel("LabGate Einstellungen")
         title.setStyleSheet("font-size: 22pt; font-weight: 600; color: #1565C0;")
         root.addWidget(title)
+
+        source = labgate_config.get_settings_source()
+        source_label = QLabel(f"Konfiguration: {source['path']} ({source['origin']})")
+        source_label.setWordWrap(True)
+        source_label.setStyleSheet("color: #546E7A; font-size: 10pt;")
+        root.addWidget(source_label)
+
         root.addWidget(outgoing_card)
         root.addWidget(incoming_card)
         root.addStretch(1)

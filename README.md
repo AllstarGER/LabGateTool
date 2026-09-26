@@ -16,6 +16,13 @@ python labgate_action_main.py
 
 ## Configuration
 
+Drop the executable into the PMS folder — it then reads the PMS `settings.ini`
+that sits next to it (section `[Backend]`), so no separate configuration is
+needed. `app_paths` additionally checks the working directory, the parent
+folders and the project folder; `HC_SETTINGS_FILE` can point to another file
+explicitly, and `[LabGateAction]` may also live in that file. The settings
+dialog shows which file is used.
+
 `settings.ini` (next to the executable or in the working directory):
 
 ```ini
