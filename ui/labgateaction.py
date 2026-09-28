@@ -1,8 +1,9 @@
 import os
+import re
 from datetime import datetime
 
-from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QKeySequence, QShortcut
+from PyQt6.QtCore import QEvent, Qt, pyqtSignal
+from PyQt6.QtGui import QGuiApplication, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QDialog,
     QFileDialog,
@@ -16,6 +17,7 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QPlainTextEdit,
+    QScrollArea,
     QSizePolicy,
     QVBoxLayout,
     QWidget,
@@ -117,7 +119,7 @@ QFrame#hintWarn {
     border-radius: 14px;
 }
 QLabel#hintIcon {
-    font-size: 26pt;
+    font-size: 22pt;
 }
 QLabel#hintText {
     font-size: 15pt;
@@ -147,8 +149,9 @@ QLabel#slotLabel {
     font-weight: 700;
     letter-spacing: 1.2px;
 }
-QLabel#slotValue {
-    font-size: 22pt;
+/* Alle Zustaende brauchen die Schriftgroesse - der objectName wechselt je Zustand. */
+QLabel#slotValue, QLabel#slotValueFilled, QLabel#slotValueNext {
+    font-size: 18pt;
     font-weight: 600;
     color: #111827;
 }
@@ -175,7 +178,7 @@ QPushButton#primary {
     border-radius: 16px;
     font-size: 20pt;
     font-weight: 700;
-    padding: 22px 24px;
+    padding: 12px 24px;
 }
 QPushButton#primary:hover { background-color: #388E3C; }
 QPushButton#primary:pressed { background-color: #1B5E20; }
@@ -188,7 +191,7 @@ QPushButton#warning {
     border-radius: 12px;
     font-size: 14pt;
     font-weight: 600;
-    padding: 16px 22px;
+    padding: 12px 22px;
 }
 QPushButton#warning:hover { background-color: #FFA726; }
 QPushButton#warning:pressed { background-color: #F57C00; }
@@ -263,6 +266,8 @@ QPlainTextEdit {
     color: #374151;
 }
 
+QScrollArea#bodyScroll, QWidget#bodyScrollContent { background: transparent; border: none; }
+
 /* ---- Scrollbars (touch) ---- */
 QScrollBar:vertical {
     background: transparent;
@@ -280,12 +285,77 @@ QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: trans
 """
 
 
+# Das Layout ist fuer rund 1000 logische Pixel Hoehe ausgelegt. Mit Windows-
+# Skalierung bleiben von 1080 Bildschirmzeilen nur 864 (125 %) bzw. 720 (150 %)
+# logische Pixel - dann werden Schrift, Abstaende und Mindesthoehen gemeinsam
+# verkleinert ("Dichte"), statt dass Qt die Karten ueberlappend beschneidet.
+MIN_DENSITY = 0.6
+MIN_FONT_FACTOR = 0.75
+# Reserve fuer Fenstertitel und -rahmen im maximierten Zustand.
+WINDOW_FRAME_RESERVE = 40
+
+_density = 1.0
+
+
+def set_density(value):
+    global _density
+    _density = max(MIN_DENSITY, min(1.0, float(value)))
+    return _density
+
+
+def current_density():
+    return _density
+
+
+def px(value):
+    """Skaliert eine Pixelgroesse mit der aktuellen Dichte."""
+    return max(1, round(value * _density))
+
+
+def scale_css(css):
+    """Skaliert pt-Schriftgroessen und px-Abstaende eines Stylesheets.
+
+    Rahmenstaerken (<= 2px) und Nachkommawerte wie letter-spacing bleiben.
+    """
+    font_factor = max(_density, MIN_FONT_FACTOR)
+
+    def _pt(match):
+        return f"{float(match.group(1)) * font_factor:.1f}pt"
+
+    def _px(match):
+        value = int(match.group(1))
+        if value <= 2:
+            return match.group(0)
+        return f"{px(value)}px"
+
+    css = re.sub(r"(?<![\d.])(\d+(?:\.\d+)?)pt\b", _pt, css)
+    return re.sub(r"(?<![\d.])(\d+)px\b", _px, css)
+
+
+def available_height(widget=None):
+    screen = widget.screen() if widget is not None else None
+    screen = screen or QGuiApplication.primaryScreen()
+    if screen is None:
+        return None
+    return screen.availableGeometry().height() - WINDOW_FRAME_RESERVE
+
+
+def _fit_dialog(dialog, width, height):
+    """Dialoggroesse an den Bildschirm anpassen, damit nichts ueber den Rand ragt."""
+    screen = dialog.screen() or QGuiApplication.primaryScreen()
+    if screen is not None:
+        geometry = screen.availableGeometry()
+        width = min(width, geometry.width() - 40)
+        height = min(height, geometry.height() - WINDOW_FRAME_RESERVE)
+    dialog.resize(width, height)
+
+
 def _make_card_frame():
     frame = QFrame()
     frame.setObjectName("card")
     layout = QVBoxLayout(frame)
-    layout.setContentsMargins(22, 18, 22, 18)
-    layout.setSpacing(10)
+    layout.setContentsMargins(px(22), px(16), px(22), px(16))
+    layout.setSpacing(px(10))
     return frame, layout
 
 
@@ -295,20 +365,105 @@ def _make_card_title(text):
     return label
 
 
-def _make_field_row(key_text):
-    row = QHBoxLayout()
-    row.setSpacing(12)
+def _add_field(grid, row, column, key_text):
+    """Legt ein Schluessel/Wert-Paar in zwei Spalten eines Grids an."""
     key = QLabel(key_text)
     key.setObjectName("fieldKey")
-    key.setMinimumWidth(112)
-    key.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
-    value = QLabel("-")
+    key.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
+    value = ElidedLabel("-")
     value.setObjectName("fieldValue")
-    value.setWordWrap(True)
-    value.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-    row.addWidget(key)
-    row.addWidget(value, 1)
-    return row, value
+    grid.addWidget(key, row, column * 2)
+    grid.addWidget(value, row, column * 2 + 1)
+    return value
+
+
+class WrappedHintLabel(QLabel):
+    """Umbrechendes Label mit fester Hoehe fuer zwei Zeilen, ohne heightForWidth.
+
+    Ein heightForWidth-Widget im Inhalt laesst QScrollArea mit der bevorzugten
+    statt der minimalen Hoehe rechnen - dann erscheint eine Scrollleiste und die
+    unterste Karte wird abgeschnitten, obwohl alles passen wuerde.
+    """
+
+    LINES = 2
+
+    def __init__(self, text="", parent=None):
+        super().__init__(text, parent)
+        self.setWordWrap(True)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+    def hasHeightForWidth(self):
+        return False
+
+    def _two_line_height(self):
+        margins = self.contentsMargins()
+        return self.fontMetrics().lineSpacing() * self.LINES + margins.top() + margins.bottom() + 2
+
+    def minimumSizeHint(self):
+        hint = super().minimumSizeHint()
+        hint.setWidth(px(120))
+        hint.setHeight(self._two_line_height())
+        return hint
+
+    def sizeHint(self):
+        hint = super().sizeHint()
+        hint.setHeight(self._two_line_height())
+        return hint
+
+
+class ElidedLabel(QLabel):
+    """Einzeiliges Label, das zu lange Texte mit "..." kuerzt (voller Text im Tooltip).
+
+    Lange Werte wie Dateipfade ohne Leerzeichen koennen nicht umbrechen und
+    wuerden sonst die Mindestbreite der ganzen Karte sprengen.
+    """
+
+    def __init__(self, text="", parent=None):
+        super().__init__(parent)
+        self._full_text = ""
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
+        self.setText(text)
+
+    def setText(self, text):
+        self._full_text = "" if text is None else str(text)
+        self._update_elided()
+
+    def text(self):
+        return self._full_text
+
+    def minimumSizeHint(self):
+        hint = super().minimumSizeHint()
+        hint.setWidth(px(80))
+        return hint
+
+    def sizeHint(self):
+        hint = super().sizeHint()
+        margins = self.contentsMargins()
+        hint.setWidth(
+            self.fontMetrics().horizontalAdvance(self._full_text) + margins.left() + margins.right() + 4
+        )
+        return hint
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._update_elided()
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        # Stylesheet-Schrift kommt erst beim Polieren an.
+        if event.type() in (QEvent.Type.FontChange, QEvent.Type.StyleChange):
+            self._update_elided()
+
+    def _update_elided(self):
+        width = self.contentsRect().width()
+        shown = self._full_text
+        if width > 0:
+            shown = self.fontMetrics().elidedText(self._full_text, Qt.TextElideMode.ElideMiddle, width)
+        if shown != super().text():
+            super().setText(shown)
+        tooltip = self._full_text if shown != self._full_text else ""
+        if tooltip != self.toolTip():
+            self.setToolTip(tooltip)
 
 
 class LabGateSettingsDialog(QDialog):
@@ -316,8 +471,8 @@ class LabGateSettingsDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("LabGate Einstellungen")
         self.setModal(True)
-        self.setStyleSheet(GLOBAL_STYLESHEET)
-        self.resize(900, 560)
+        self.setStyleSheet(scale_css(GLOBAL_STYLESHEET))
+        _fit_dialog(self, px(900), px(640))
 
         self.lnOutgoingFolder = QLineEdit()
         self.lnOutgoingFilename = QLineEdit()
@@ -326,7 +481,7 @@ class LabGateSettingsDialog(QDialog):
 
         for line in (self.lnOutgoingFolder, self.lnOutgoingFilename,
                      self.lnIncomingFolder, self.lnIncomingFilter):
-            line.setMinimumHeight(54)
+            line.setMinimumHeight(px(50))
 
         btnOutgoingBrowse = QPushButton("Ordner...")
         btnIncomingBrowse = QPushButton("Ordner...")
@@ -334,14 +489,14 @@ class LabGateSettingsDialog(QDialog):
         btnCancel = QPushButton("Abbrechen")
 
         btnSave.setObjectName("primary")
-        btnSave.setMinimumHeight(72)
-        btnSave.setMinimumWidth(220)
-        btnCancel.setMinimumHeight(72)
-        btnCancel.setMinimumWidth(220)
-        btnOutgoingBrowse.setMinimumHeight(54)
-        btnOutgoingBrowse.setMinimumWidth(160)
-        btnIncomingBrowse.setMinimumHeight(54)
-        btnIncomingBrowse.setMinimumWidth(160)
+        btnSave.setMinimumHeight(px(64))
+        btnSave.setMinimumWidth(px(220))
+        btnCancel.setMinimumHeight(px(64))
+        btnCancel.setMinimumWidth(px(220))
+        btnOutgoingBrowse.setMinimumHeight(px(50))
+        btnOutgoingBrowse.setMinimumWidth(px(160))
+        btnIncomingBrowse.setMinimumHeight(px(50))
+        btnIncomingBrowse.setMinimumWidth(px(160))
 
         btnOutgoingBrowse.clicked.connect(self.on_outgoing_browse)
         btnIncomingBrowse.clicked.connect(self.on_incoming_browse)
@@ -352,7 +507,7 @@ class LabGateSettingsDialog(QDialog):
         outgoing_layout.addWidget(_make_card_title("Ausgehender Auftrag"))
         outgoing_layout.addWidget(QLabel("Ordner"))
         outgoing_row = QHBoxLayout()
-        outgoing_row.setSpacing(10)
+        outgoing_row.setSpacing(px(10))
         outgoing_row.addWidget(self.lnOutgoingFolder, 1)
         outgoing_row.addWidget(btnOutgoingBrowse)
         outgoing_layout.addLayout(outgoing_row)
@@ -363,7 +518,7 @@ class LabGateSettingsDialog(QDialog):
         incoming_layout.addWidget(_make_card_title("Eingehender Rücklauf"))
         incoming_layout.addWidget(QLabel("Ordner"))
         incoming_row = QHBoxLayout()
-        incoming_row.setSpacing(10)
+        incoming_row.setSpacing(px(10))
         incoming_row.addWidget(self.lnIncomingFolder, 1)
         incoming_row.addWidget(btnIncomingBrowse)
         incoming_layout.addLayout(incoming_row)
@@ -371,23 +526,23 @@ class LabGateSettingsDialog(QDialog):
         incoming_layout.addWidget(self.lnIncomingFilter)
 
         actions = QHBoxLayout()
-        actions.setSpacing(16)
+        actions.setSpacing(px(16))
         actions.addStretch(1)
         actions.addWidget(btnCancel)
         actions.addWidget(btnSave)
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(28, 28, 28, 24)
-        root.setSpacing(18)
+        root.setContentsMargins(px(28), px(24), px(28), px(20))
+        root.setSpacing(px(14))
 
         title = QLabel("LabGate Einstellungen")
-        title.setStyleSheet("font-size: 22pt; font-weight: 600; color: #1565C0;")
+        title.setStyleSheet(scale_css("font-size: 22pt; font-weight: 600; color: #1565C0;"))
         root.addWidget(title)
 
         source = labgate_config.get_settings_source()
         source_label = QLabel(f"Konfiguration: {source['path']} ({source['origin']})")
         source_label.setWordWrap(True)
-        source_label.setStyleSheet("color: #546E7A; font-size: 10pt;")
+        source_label.setStyleSheet(scale_css("color: #546E7A; font-size: 10pt;"))
         root.addWidget(source_label)
 
         root.addWidget(outgoing_card)
@@ -453,13 +608,13 @@ class LabGateMarkerDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Mitarbeiter für Laborbenachrichtigung")
         self.setModal(True)
-        self.setStyleSheet(GLOBAL_STYLESHEET)
-        self.resize(680, 640)
+        self.setStyleSheet(scale_css(GLOBAL_STYLESHEET))
+        _fit_dialog(self, px(680), px(720))
 
         header = QFrame()
         header.setObjectName("headerBar")
         header_layout = QVBoxLayout(header)
-        header_layout.setContentsMargins(24, 12, 24, 12)
+        header_layout.setContentsMargins(px(24), px(12), px(24), px(12))
         header_layout.setSpacing(2)
         header_title = QLabel("Mitarbeiter für Laborbenachrichtigung")
         header_title.setObjectName("headerTitle")
@@ -474,7 +629,7 @@ class LabGateMarkerDialog(QDialog):
         self.user_list = QListWidget()
         self.user_list.setObjectName("markerList")
         self.user_list.setSelectionMode(QListWidget.SelectionMode.MultiSelection)
-        self.user_list.setMinimumHeight(360)
+        self.user_list.setMinimumHeight(px(200))
         for user in users:
             user_id = user.get("id")
             label = str(user.get("user_name") or user.get("user_id") or user_id)
@@ -503,12 +658,12 @@ class LabGateMarkerDialog(QDialog):
         actions.addWidget(btnSave)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 20)
-        layout.setSpacing(14)
+        layout.setContentsMargins(0, 0, 0, px(20))
+        layout.setSpacing(px(14))
         layout.addWidget(header)
         body = QVBoxLayout()
-        body.setContentsMargins(24, 4, 24, 0)
-        body.setSpacing(14)
+        body.setContentsMargins(px(24), px(4), px(24), 0)
+        body.setSpacing(px(14))
         body.addWidget(QLabel("Ein oder mehrere Mitarbeiter auswählen (Mehrfachauswahl mit Strg):"))
         body.addWidget(self.user_list, 1)
         body.addWidget(QLabel("Hinweis:"))
@@ -533,6 +688,7 @@ class LabGateActionWindow(QWidget):
         self._selected_case_info = None
         self._watcher = None
         self._blocking_job = None
+        self._content = None
         self._build_ui()
         self.ensure_schema()
         self.reload_patients()
@@ -553,32 +709,94 @@ class LabGateActionWindow(QWidget):
             | Qt.WindowType.WindowCloseButtonHint
         )
         self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, False)
-        self.resize(1366, 768)
-        self.setStyleSheet(GLOBAL_STYLESHEET)
 
-        root = QVBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(0)
-
-        root.addWidget(self._build_header())
-
-        body = QWidget()
-        body_layout = QHBoxLayout(body)
-        body_layout.setContentsMargins(20, 20, 20, 20)
-        body_layout.setSpacing(20)
-        body_layout.addWidget(self._build_left_panel(), 35)
-        body_layout.addWidget(self._build_right_panel(), 65)
-        root.addWidget(body, 1)
+        self._root = QVBoxLayout(self)
+        self._root.setContentsMargins(0, 0, 0, 0)
+        self._root.setSpacing(0)
 
         QShortcut(QKeySequence("F11"), self, activated=self._toggle_fullscreen)
+
+        set_density(1.0)
+        self._build_content()
+        self._fit_to_screen()
+
+    def _fit_to_screen(self):
+        """Dichte so waehlen, dass alle Karten ohne Beschneiden auf den Bildschirm passen.
+
+        Die Mindesthoehe haengt von Schriftmetriken ab und ist daher nicht exakt
+        vorhersagbar - gemessen wird nach dem Aufbau, bei Bedarf wird mit kleinerer
+        Dichte neu aufgebaut. Reicht auch die kleinste Dichte nicht, bleibt der
+        Inhalt ueber die Scrollleiste erreichbar statt abgeschnitten zu werden.
+        """
+        budget = available_height(self)
+        if budget is None:
+            return
+        for _ in range(4):
+            needed = self._required_height()
+            if needed <= budget or current_density() <= MIN_DENSITY:
+                break
+            set_density(current_density() * budget / needed)
+            self._build_content()
+        screen = self.screen() or QGuiApplication.primaryScreen()
+        if screen is not None:
+            geometry = screen.availableGeometry()
+            self.resize(min(px(1366), geometry.width()), min(px(900), budget))
+
+    def _required_height(self):
+        self._content.ensurePolished()
+        margins = self._body_layout.contentsMargins()
+        panels = max(
+            self._left_panel.minimumSizeHint().height(),
+            self._right_panel.minimumSizeHint().height(),
+        )
+        return self._header.minimumSizeHint().height() + margins.top() + margins.bottom() + panels
+
+    def _build_content(self):
+        """(Neu-)Aufbau aller sichtbaren Elemente mit der aktuellen Dichte."""
+        if self._content is not None:
+            self._root.removeWidget(self._content)
+            self._content.hide()
+            self._content.deleteLater()
+
+        self.setStyleSheet(scale_css(GLOBAL_STYLESHEET))
+
+        content = QWidget()
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(0)
+
+        self._header = self._build_header()
+        content_layout.addWidget(self._header)
+
+        body = QWidget()
+        body.setObjectName("bodyScrollContent")
+        self._body_layout = QHBoxLayout(body)
+        self._body_layout.setContentsMargins(px(20), px(16), px(20), px(16))
+        self._body_layout.setSpacing(px(20))
+        self._left_panel = self._build_left_panel()
+        self._right_panel = self._build_right_panel()
+        self._body_layout.addWidget(self._left_panel, 35)
+        self._body_layout.addWidget(self._right_panel, 65)
+
+        # Sicherheitsnetz fuer sehr kleine Fenster: scrollen statt ueberlappen.
+        scroll = QScrollArea()
+        scroll.setObjectName("bodyScroll")
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(body)
+        content_layout.addWidget(scroll, 1)
+
+        self._root.addWidget(content)
+        self._content = content
+        # Startfokus auf die Liste (Pfeiltasten) statt Fokusrahmen auf "Aktualisieren".
+        self.listPatients.setFocus()
 
     def _build_header(self):
         header = QFrame()
         header.setObjectName("headerBar")
-        header.setMinimumHeight(96)
         layout = QHBoxLayout(header)
-        layout.setContentsMargins(28, 14, 28, 14)
-        layout.setSpacing(12)
+        layout.setContentsMargins(px(28), px(10), px(28), px(10))
+        layout.setSpacing(px(12))
 
         title_box = QVBoxLayout()
         title_box.setSpacing(2)
@@ -597,9 +815,8 @@ class LabGateActionWindow(QWidget):
         self.btnSettings.setObjectName("header")
         self.btnExit.setObjectName("headerExit")
         for btn in (self.btnRefresh, self.btnSettings, self.btnExit):
-            btn.setMinimumHeight(60)
-            # Breite = Textbreite + Innenabstand, sonst schneidet Qt die Beschriftung ab
-            btn.setMinimumWidth(max(160, btn.sizeHint().width()))
+            btn.setMinimumHeight(px(52))
+            btn.setMinimumWidth(px(150))
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
 
         self.btnRefresh.clicked.connect(self.reload_patients)
@@ -614,17 +831,17 @@ class LabGateActionWindow(QWidget):
 
     def _build_left_panel(self):
         card, card_layout = _make_card_frame()
-        card_layout.setContentsMargins(20, 18, 20, 18)
-        card_layout.setSpacing(8)
+        card_layout.setContentsMargins(px(20), px(16), px(20), px(16))
+        card_layout.setSpacing(px(8))
 
         header_row = QHBoxLayout()
         title_label = QLabel("PATIENTEN HEUTE")
         title_label.setObjectName("cardTitle")
         self.lbPatientCount = QLabel("0")
-        self.lbPatientCount.setStyleSheet(
+        self.lbPatientCount.setStyleSheet(scale_css(
             "background-color: #1565C0; color: white; border-radius: 12px;"
             " padding: 4px 14px; font-size: 12pt; font-weight: 600;"
-        )
+        ))
         header_row.addWidget(title_label)
         header_row.addStretch(1)
         header_row.addWidget(self.lbPatientCount)
@@ -635,6 +852,7 @@ class LabGateActionWindow(QWidget):
         self.listPatients.setSpacing(0)
         self.listPatients.setUniformItemSizes(False)
         self.listPatients.setVerticalScrollMode(QListWidget.ScrollMode.ScrollPerPixel)
+        self.listPatients.setMinimumHeight(px(160))
         self.listPatients.currentItemChanged.connect(self.on_patient_changed)
         card_layout.addWidget(self.listPatients, 1)
 
@@ -644,10 +862,10 @@ class LabGateActionWindow(QWidget):
         wrapper = QWidget()
         right = QVBoxLayout(wrapper)
         right.setContentsMargins(0, 0, 0, 0)
-        right.setSpacing(16)
+        right.setSpacing(px(14))
 
         right.addWidget(self._build_hint_banner())
-        right.addWidget(self._build_info_row())
+        right.addWidget(self._build_info_card())
         right.addWidget(self._build_slot_card())
         right.addWidget(self._build_action_row())
         right.addWidget(self._build_log_card(), 1)
@@ -657,20 +875,18 @@ class LabGateActionWindow(QWidget):
     def _build_hint_banner(self):
         self.hintFrame = QFrame()
         self.hintFrame.setObjectName("hintInfo")
-        self.hintFrame.setMinimumHeight(72)
         layout = QHBoxLayout(self.hintFrame)
-        layout.setContentsMargins(22, 14, 22, 14)
-        layout.setSpacing(16)
+        layout.setContentsMargins(px(20), px(10), px(20), px(10))
+        layout.setSpacing(px(14))
 
         self.lbHintIcon = QLabel("i")
         self.lbHintIcon.setObjectName("hintIcon")
-        self.lbHintIcon.setFixedWidth(40)
+        self.lbHintIcon.setFixedWidth(px(40))
         self.lbHintIcon.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        self.lbActionHint = QLabel("Bitte einen Patienten auswählen.")
+        self.lbActionHint = WrappedHintLabel("Bitte einen Patienten auswählen.")
         self.lbActionHint.setObjectName("hintText")
-        self.lbActionHint.setWordWrap(True)
-        self.lbActionHint.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self.lbActionHint.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
 
         layout.addWidget(self.lbHintIcon)
         layout.addWidget(self.lbActionHint, 1)
@@ -690,37 +906,31 @@ class LabGateActionWindow(QWidget):
         self.hintFrame.style().polish(self.hintFrame)
         self.lbActionHint.setText(text)
 
-    def _build_info_row(self):
-        row = QHBoxLayout()
-        row.setSpacing(16)
+    def _build_info_card(self):
+        # Patient und Fall in einer Karte mit zwei Spalten: drei Zeilen statt
+        # zwei Karten mit bis zu vier Zeilen - spart Hoehe auf kleinen Bildschirmen.
+        card, layout = _make_card_frame()
 
-        # Patient card
-        patient_card, patient_layout = _make_card_frame()
-        patient_layout.addWidget(_make_card_title("Patient"))
-        name_row, self.lbPatientName = _make_field_row("Name")
-        dob_row, self.lbPatientDob = _make_field_row("Geburtsdatum")
-        patient_layout.addLayout(name_row)
-        patient_layout.addLayout(dob_row)
-        patient_layout.addStretch(1)
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(px(14))
+        grid.setVerticalSpacing(px(6))
+        patient_title = _make_card_title("Patient")
+        case_title = _make_card_title("Fall & Auftrag")
+        grid.addWidget(patient_title, 0, 0, 1, 2)
+        grid.addWidget(case_title, 0, 2, 1, 2)
 
-        # Case / Job card
-        case_card, case_layout = _make_card_frame()
-        case_layout.addWidget(_make_card_title("Fall & Auftrag"))
-        case_no_row, self.lbCaseNo = _make_field_row("Fall")
-        case_date_row, self.lbCaseDate = _make_field_row("Falldatum")
-        job_status_row, self.lbJobStatus = _make_field_row("Jobstatus")
-        request_row, self.lbOpenRequestFile = _make_field_row("Datei")
-        case_layout.addLayout(case_no_row)
-        case_layout.addLayout(case_date_row)
-        case_layout.addLayout(job_status_row)
-        case_layout.addLayout(request_row)
+        self.lbPatientName = _add_field(grid, 1, 0, "Name")
+        self.lbPatientDob = _add_field(grid, 2, 0, "Geburtsdatum")
+        self.lbJobStatus = _add_field(grid, 3, 0, "Jobstatus")
+        self.lbCaseNo = _add_field(grid, 1, 1, "Fall")
+        self.lbCaseDate = _add_field(grid, 2, 1, "Falldatum")
+        self.lbOpenRequestFile = _add_field(grid, 3, 1, "Datei")
 
-        row.addWidget(patient_card, 1)
-        row.addWidget(case_card, 1)
-
-        wrapper = QWidget()
-        wrapper.setLayout(row)
-        return wrapper
+        grid.setColumnStretch(1, 1)
+        grid.setColumnStretch(3, 1)
+        grid.setColumnMinimumWidth(2, px(110))
+        layout.addLayout(grid)
+        return card
 
     def _build_slot_card(self):
         card, layout = _make_card_frame()
@@ -728,25 +938,25 @@ class LabGateActionWindow(QWidget):
         header_row.addWidget(_make_card_title("Labornummern"))
         header_row.addStretch(1)
         self.lbNextSlot = QLabel("-")
-        self.lbNextSlot.setStyleSheet(
+        self.lbNextSlot.setStyleSheet(scale_css(
             "background-color: #E3F2FD; color: #0D47A1; border: 1px solid #90CAF9;"
             " border-radius: 12px; padding: 4px 14px; font-size: 12pt; font-weight: 600;"
-        )
+        ))
         header_row.addWidget(QLabel("Nächster freier Slot:"))
         header_row.addWidget(self.lbNextSlot)
         layout.addLayout(header_row)
 
         grid = QGridLayout()
-        grid.setSpacing(14)
+        grid.setSpacing(px(14))
         self._slot_tiles = []
         self._slot_value_labels = []
         for idx in range(3):
             tile = ClickableFrame()
             tile.setObjectName("slotTile")
-            tile.setMinimumHeight(110)
+            tile.setMinimumHeight(px(84))
             tile_layout = QVBoxLayout(tile)
-            tile_layout.setContentsMargins(18, 14, 18, 14)
-            tile_layout.setSpacing(4)
+            tile_layout.setContentsMargins(px(18), px(10), px(18), px(10))
+            tile_layout.setSpacing(px(2))
 
             slot_label = QLabel(f"SLOT {idx + 1}")
             slot_label.setObjectName("slotLabel")
@@ -760,6 +970,7 @@ class LabGateActionWindow(QWidget):
             tile_layout.addWidget(value_label, 1)
 
             grid.addWidget(tile, 0, idx)
+            grid.setColumnStretch(idx, 1)
             self._slot_tiles.append(tile)
             self._slot_value_labels.append(value_label)
             tile.clicked.connect(lambda slot_no=idx + 1: self.open_marker_dialog(slot_no))
@@ -791,22 +1002,21 @@ class LabGateActionWindow(QWidget):
 
     def _build_action_row(self):
         card, layout = _make_card_frame()
-        layout.addWidget(_make_card_title("Aktion"))
 
         row = QHBoxLayout()
-        row.setSpacing(16)
+        row.setSpacing(px(16))
 
         self.btnCreateOrder = QPushButton("Auftrag senden")
         self.btnCreateOrder.setObjectName("primary")
-        self.btnCreateOrder.setMinimumHeight(120)
+        self.btnCreateOrder.setMinimumHeight(px(80))
         self.btnCreateOrder.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self.btnCreateOrder.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btnCreateOrder.clicked.connect(self.create_order)
 
         self.btnResetOrder = QPushButton("Offenen Auftrag\nzurücksetzen")
         self.btnResetOrder.setObjectName("warning")
-        self.btnResetOrder.setMinimumHeight(120)
-        self.btnResetOrder.setMinimumWidth(280)
+        self.btnResetOrder.setMinimumHeight(px(80))
+        self.btnResetOrder.setMinimumWidth(px(240))
         self.btnResetOrder.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btnResetOrder.clicked.connect(self.reset_open_job)
 
@@ -821,7 +1031,7 @@ class LabGateActionWindow(QWidget):
         layout.addWidget(_make_card_title("Rücklauf & Ereignisse"))
         self.txtLog = QPlainTextEdit()
         self.txtLog.setReadOnly(True)
-        self.txtLog.setMinimumHeight(140)
+        self.txtLog.setMinimumHeight(px(80))
         layout.addWidget(self.txtLog, 1)
         return card
 
